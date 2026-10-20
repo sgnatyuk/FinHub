@@ -165,4 +165,32 @@ func TestGetFromForeignHub(t *testing.T) {
 	}
 }
 
+func TestCreateStarter(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newService()
+	if _, err := svc.Create(ctx, dad, family, "кафе"); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := svc.CreateStarter(ctx, dad, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := len(category.StarterNames) - 1; len(created) != want {
+		t.Errorf("created %d categories, want %d (Кафе already exists)", len(created), want)
+	}
+
+	// Повторный вызов ничего не добавляет.
+	if _, err := svc.CreateStarter(ctx, mom, family); err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.items) != len(category.StarterNames) {
+		t.Errorf("stored %d categories, want %d", len(repo.items), len(category.StarterNames))
+	}
+
+	if _, err := svc.CreateStarter(ctx, mom, personal); !errors.Is(err, hub.ErrNotMember) {
+		t.Errorf("error = %v, want ErrNotMember", err)
+	}
+}
+
 var _ category.Members = (*hub.Service)(nil)

@@ -84,6 +84,31 @@ func (s *Service) Default(ctx context.Context, actor user.ID, hubID hub.ID) (*Ca
 	return c, err
 }
 
+// CreateStarter заводит в хабе стартовый набор категорий. Уже
+// существующие имена пропускаются, поэтому повторный вызов безопасен.
+//
+// Вызывается сразу после создания хаба. Сам пакет hub этого сделать
+// не может: category импортирует hub, и обратный импорт дал бы цикл,
+// который Go запрещает. Связку «создать хаб + категории» делает
+// вызывающий код (регистрация, команда /hub new).
+func (s *Service) CreateStarter(ctx context.Context, actor user.ID, hubID hub.ID) ([]Category, error) {
+	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	created := make([]Category, 0, len(StarterNames))
+	for _, name := range StarterNames {
+		c, err := s.create(ctx, hubID, name)
+		if errors.Is(err, ErrDuplicateName) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		created = append(created, *c)
+	}
+	return created, nil
+}
+
 func (s *Service) create(ctx context.Context, hubID hub.ID, name string) (*Category, error) {
 	c, err := New(hubID, name, s.now())
 	if err != nil {
