@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/OWNER/finhub/internal/category"
-	"github.com/OWNER/finhub/internal/hub"
-	"github.com/OWNER/finhub/internal/money"
-	"github.com/OWNER/finhub/internal/user"
+	"github.com/sgnatyuk/FinHub/internal/category"
+	"github.com/sgnatyuk/FinHub/internal/hub"
+	"github.com/sgnatyuk/FinHub/internal/money"
+	"github.com/sgnatyuk/FinHub/internal/user"
 )
 
 // Repository — хранилище трат. Интерфейс объявлен здесь, у потребителя,

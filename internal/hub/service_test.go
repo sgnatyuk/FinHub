@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OWNER/finhub/internal/hub"
-	"github.com/OWNER/finhub/internal/money"
-	"github.com/OWNER/finhub/internal/user"
+	"github.com/sgnatyuk/FinHub/internal/hub"
+	"github.com/sgnatyuk/FinHub/internal/money"
+	"github.com/sgnatyuk/FinHub/internal/user"
 )
 
 type memRepo struct {

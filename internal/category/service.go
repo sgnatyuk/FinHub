@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/OWNER/finhub/internal/hub"
-	"github.com/OWNER/finhub/internal/user"
+	"github.com/sgnatyuk/FinHub/internal/hub"
+	"github.com/sgnatyuk/FinHub/internal/user"
 )
 
 // Repository — то, что сервису нужно от хранилища. Реализация

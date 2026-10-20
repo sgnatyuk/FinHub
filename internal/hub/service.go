@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/OWNER/finhub/internal/money"
-	"github.com/OWNER/finhub/internal/user"
+	"github.com/sgnatyuk/FinHub/internal/money"
+	"github.com/sgnatyuk/FinHub/internal/user"
 )
 
 type Repository interface {

@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/OWNER/finhub/internal/money"
+	"github.com/sgnatyuk/FinHub/internal/money"
 )
 
 func TestParse(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/OWNER/finhub/internal/category"
-	"github.com/OWNER/finhub/internal/hub"
-	"github.com/OWNER/finhub/internal/user"
+	"github.com/sgnatyuk/FinHub/internal/category"
+	"github.com/sgnatyuk/FinHub/internal/hub"
+	"github.com/sgnatyuk/FinHub/internal/user"
 )
 
 // memRepo — рукописный fake вместо мок-фреймворка: настоящая логика

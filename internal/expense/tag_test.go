@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/OWNER/finhub/internal/expense"
+	"github.com/sgnatyuk/FinHub/internal/expense"
 )
 
 func TestParseTag(t *testing.T) {

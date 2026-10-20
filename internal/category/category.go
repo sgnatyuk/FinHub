@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/OWNER/finhub/internal/hub"
+	"github.com/sgnatyuk/FinHub/internal/hub"
 )
 
 type ID int64

@@ -1,3 +1,3 @@
-module github.com/OWNER/finhub
+module github.com/sgnatyuk/FinHub
 
 go 1.24
