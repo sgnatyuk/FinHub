@@ -51,6 +51,16 @@ func (r *memExpenses) List(_ context.Context, hubID hub.ID, f expense.Filter) ([
 	return out, nil
 }
 
+func (r *memExpenses) Update(_ context.Context, e *expense.Expense) error {
+	for i := range r.items {
+		if r.items[i].HubID == e.HubID && r.items[i].ID == e.ID {
+			r.items[i] = *e
+			return nil
+		}
+	}
+	return expense.ErrNotFound
+}
+
 func (r *memExpenses) Delete(_ context.Context, hubID hub.ID, id expense.ID) error {
 	for i, e := range r.items {
 		if e.HubID == hubID && e.ID == id {
@@ -335,6 +345,96 @@ func TestDelete(t *testing.T) {
 				t.Errorf("%d expenses left, want %d", len(repo.items), wantLeft)
 			}
 		})
+	}
+}
+
+// ptr — маленький дженерик-хелпер: &"строка" в Go написать нельзя.
+func ptr[T any](v T) *T { return &v }
+
+func TestUpdate(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		actor   user.ID
+		in      expense.UpdateInput
+		check   func(t *testing.T, e *expense.Expense)
+		wantErr error
+	}{
+		{
+			name:  "author changes amount only",
+			actor: mom,
+			in:    expense.UpdateInput{Amount: ptr(rub(t, 777))},
+			check: func(t *testing.T, e *expense.Expense) {
+				if e.Amount.Amount() != 777 || e.Note != "такси" || len(e.Tags) != 1 {
+					t.Errorf("got %+v, want only amount changed", e)
+				}
+			},
+		},
+		{
+			name:  "owner clears tags and note",
+			actor: dad,
+			in:    expense.UpdateInput{Tags: ptr([]string{}), Note: ptr("")},
+			check: func(t *testing.T, e *expense.Expense) {
+				if len(e.Tags) != 0 || e.Note != "" || e.AuthorID != mom {
+					t.Errorf("got %+v, want no tags, empty note, author mom", e)
+				}
+			},
+		},
+		{
+			name:  "move to default category",
+			actor: mom,
+			in:    expense.UpdateInput{CategoryID: ptr(category.ID(0))},
+			check: func(t *testing.T, e *expense.Expense) {
+				if e.CategoryID == transport {
+					t.Errorf("CategoryID still transport")
+				}
+			},
+		},
+		{name: "stranger", actor: stranger, in: expense.UpdateInput{Note: ptr("x")}, wantErr: hub.ErrNotMember},
+		{name: "invalid amount", actor: mom, in: expense.UpdateInput{Amount: ptr(rub(t, 0))}, wantErr: expense.ErrInvalidAmount},
+		{name: "wrong currency", actor: mom, in: expense.UpdateInput{Amount: ptr(usd(t, 100))}, wantErr: expense.ErrWrongCurrency},
+		{name: "category from another hub", actor: mom, in: expense.UpdateInput{CategoryID: ptr(hobby)}, wantErr: category.ErrNotFound},
+		{name: "tag equals category", actor: mom, in: expense.UpdateInput{Tags: ptr([]string{"Транспорт"})}, wantErr: expense.ErrTagIsCategory},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, repo := newService()
+			e, err := svc.Record(ctx, expense.RecordInput{
+				Actor: mom, HubID: family, CategoryID: transport,
+				Amount: rub(t, 100), Note: "такси", Tags: []string{"работа"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := svc.Update(ctx, tt.actor, family, e.ID, tt.in)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if repo.items[0].Amount.Amount() != 100 {
+					t.Errorf("stored expense changed after error")
+				}
+				return
+			}
+			tt.check(t, got)
+			if got.ID != e.ID || !got.CreatedAt.Equal(e.CreatedAt) {
+				t.Errorf("ID/CreatedAt changed: %+v", got)
+			}
+		})
+	}
+}
+
+func TestUpdateOthersExpenseForbidden(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService()
+	e, err := svc.Record(ctx, expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, 100)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, mom, family, e.ID, expense.UpdateInput{Note: ptr("моё")}); !errors.Is(err, expense.ErrForbidden) {
+		t.Errorf("error = %v, want ErrForbidden", err)
 	}
 }
 

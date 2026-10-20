@@ -15,6 +15,7 @@ type Repository interface {
 	// Get возвращает ErrNotFound, если хаба нет.
 	Get(ctx context.Context, id ID) (*Hub, error)
 	SetCurrency(ctx context.Context, id ID, cur money.Currency) error
+	SetTimezone(ctx context.Context, id ID, tz string) error
 	// Member возвращает ErrNotMember, если пользователь не состоит в хабе.
 	Member(ctx context.Context, hubID ID, userID user.ID) (*Member, error)
 	// AddMember возвращает ErrAlreadyMember при повторном добавлении.
@@ -60,18 +61,40 @@ func (s *Service) Get(ctx context.Context, actor user.ID, hubID ID) (*Hub, error
 // SetCurrency меняет валюту хаба (команда /config). Только владелец.
 // Старые траты остаются в прежней валюте, статистика считает валюты раздельно.
 func (s *Service) SetCurrency(ctx context.Context, actor user.ID, hubID ID, cur money.Currency) error {
-	m, err := s.repo.Member(ctx, hubID, actor)
-	if err != nil {
+	if err := s.requireOwner(ctx, actor, hubID, "change currency"); err != nil {
 		return err
-	}
-	if !m.IsOwner() {
-		return fmt.Errorf("%w: only owner can change currency", ErrForbidden)
 	}
 	// Проверяем через money.New, чтобы не дублировать список валют.
 	if _, err := money.New(0, cur); err != nil {
 		return err
 	}
 	return s.repo.SetCurrency(ctx, hubID, cur)
+}
+
+// SetTimezone меняет часовой пояс хаба (команда /config). Только владелец.
+func (s *Service) SetTimezone(ctx context.Context, actor user.ID, hubID ID, tz string) error {
+	if err := s.requireOwner(ctx, actor, hubID, "change timezone"); err != nil {
+		return err
+	}
+	// "" и "Local" LoadLocation принимает, но для хаба они бессмысленны.
+	if tz == "" || tz == "Local" {
+		return fmt.Errorf("%w: %q", ErrInvalidTZ, tz)
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return fmt.Errorf("%w: %q", ErrInvalidTZ, tz)
+	}
+	return s.repo.SetTimezone(ctx, hubID, tz)
+}
+
+func (s *Service) requireOwner(ctx context.Context, actor user.ID, hubID ID, action string) error {
+	m, err := s.repo.Member(ctx, hubID, actor)
+	if err != nil {
+		return err
+	}
+	if !m.IsOwner() {
+		return fmt.Errorf("%w: only owner can %s", ErrForbidden, action)
+	}
+	return nil
 }
 
 // Member — проверка доступа, которой пользуются другие пакеты.
@@ -81,12 +104,8 @@ func (s *Service) Member(ctx context.Context, hubID ID, userID user.ID) (*Member
 
 // AddMember добавляет участника. Делать это может только владелец.
 func (s *Service) AddMember(ctx context.Context, actor user.ID, hubID ID, newUser user.ID) error {
-	m, err := s.repo.Member(ctx, hubID, actor)
-	if err != nil {
+	if err := s.requireOwner(ctx, actor, hubID, "add members"); err != nil {
 		return err
-	}
-	if !m.IsOwner() {
-		return fmt.Errorf("%w: only owner can add members", ErrForbidden)
 	}
 	return s.repo.AddMember(ctx, Member{HubID: hubID, UserID: newUser, Role: RoleMember, JoinedAt: s.now()})
 }

@@ -44,6 +44,16 @@ func (r *memRepo) SetCurrency(_ context.Context, id hub.ID, cur money.Currency) 
 	return hub.ErrNotFound
 }
 
+func (r *memRepo) SetTimezone(_ context.Context, id hub.ID, tz string) error {
+	for i := range r.hubs {
+		if r.hubs[i].ID == id {
+			r.hubs[i].Timezone = tz
+			return nil
+		}
+	}
+	return hub.ErrNotFound
+}
+
 func (r *memRepo) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
 	for _, m := range r.members {
 		if m.HubID == hubID && m.UserID == userID {
@@ -195,5 +205,47 @@ func TestSetCurrency(t *testing.T) {
 	}
 	if got.Currency != money.USD {
 		t.Errorf("currency = %q, want USD", got.Currency)
+	}
+}
+
+func TestSetTimezone(t *testing.T) {
+	ctx := context.Background()
+	svc := hub.NewService(&memRepo{})
+	h, err := svc.Create(ctx, dad, "Семья")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc, err := h.Location(); err != nil || loc.String() != hub.DefaultTimezone {
+		t.Fatalf("default location = %v, %v; want %s", loc, err, hub.DefaultTimezone)
+	}
+	if err := svc.AddMember(ctx, dad, h.ID, mom); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		actor   user.ID
+		tz      string
+		wantErr error
+	}{
+		{name: "member cannot", actor: mom, tz: "Asia/Tbilisi", wantErr: hub.ErrForbidden},
+		{name: "unknown", actor: dad, tz: "Mars/Olympus", wantErr: hub.ErrInvalidTZ},
+		{name: "empty", actor: dad, tz: "", wantErr: hub.ErrInvalidTZ},
+		{name: "owner sets Tbilisi", actor: dad, tz: "Asia/Tbilisi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := svc.SetTimezone(ctx, tt.actor, h.ID, tt.tz); !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	got, err := svc.Get(ctx, mom, h.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Timezone != "Asia/Tbilisi" {
+		t.Errorf("timezone = %q, want Asia/Tbilisi", got.Timezone)
 	}
 }

@@ -22,6 +22,13 @@ type Repository interface {
 	// GetByName ищет без учёта регистра; ErrNotFound, если нет.
 	GetByName(ctx context.Context, hubID hub.ID, name string) (*Category, error)
 	List(ctx context.Context, hubID hub.ID) ([]Category, error)
+	// Rename возвращает ErrDuplicateName, если новое имя занято.
+	Rename(ctx context.Context, hubID hub.ID, id ID, name string) error
+	// Delete удаляет категорию и в той же транзакции переносит
+	// её траты в категорию moveTo. Перенос делает хранилище, потому что
+	// пакет category не знает про траты (expense импортирует category,
+	// обратный импорт дал бы цикл).
+	Delete(ctx context.Context, hubID hub.ID, id, moveTo ID) error
 }
 
 // Members — проверка участия в хабе. Её реализует hub.Service.
@@ -82,6 +89,56 @@ func (s *Service) Default(ctx context.Context, actor user.ID, hubID hub.ID) (*Ca
 		return s.repo.GetByName(ctx, hubID, DefaultName)
 	}
 	return c, err
+}
+
+// Rename переименовывает категорию. Только владелец хаба: список общий.
+func (s *Service) Rename(ctx context.Context, actor user.ID, hubID hub.ID, id ID, name string) error {
+	if err := s.requireOwner(ctx, actor, hubID); err != nil {
+		return err
+	}
+	name, err := normalizeName(name)
+	if err != nil {
+		return err
+	}
+	c, err := s.repo.Get(ctx, hubID, id)
+	if err != nil {
+		return err
+	}
+	if c.IsDefault() {
+		return ErrDefault
+	}
+	return s.repo.Rename(ctx, hubID, id, name)
+}
+
+// Delete удаляет категорию, а её траты переходят в «Прочее».
+// Только владелец хаба; саму «Прочее» удалить нельзя.
+func (s *Service) Delete(ctx context.Context, actor user.ID, hubID hub.ID, id ID) error {
+	if err := s.requireOwner(ctx, actor, hubID); err != nil {
+		return err
+	}
+	c, err := s.repo.Get(ctx, hubID, id)
+	if err != nil {
+		return err
+	}
+	if c.IsDefault() {
+		return ErrDefault
+	}
+	def, err := s.Default(ctx, actor, hubID)
+	if err != nil {
+		return err
+	}
+	return s.repo.Delete(ctx, hubID, id, def.ID)
+}
+
+func (s *Service) requireOwner(ctx context.Context, actor user.ID, hubID hub.ID) error {
+	m, err := s.members.Member(ctx, hubID, actor)
+	if err != nil {
+		return err
+	}
+	if !m.IsOwner() {
+		return fmt.Errorf("%w: only owner can change categories", hub.ErrForbidden)
+	}
+	return nil
 }
 
 // CreateStarter заводит в хабе стартовый набор категорий. Уже

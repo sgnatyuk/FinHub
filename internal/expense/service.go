@@ -20,6 +20,8 @@ type Repository interface {
 	Get(ctx context.Context, hubID hub.ID, id ID) (*Expense, error)
 	// List возвращает траты хаба по фильтру, новые первыми.
 	List(ctx context.Context, hubID hub.ID, f Filter) ([]Expense, error)
+	// Update сохраняет изменённую трату целиком.
+	Update(ctx context.Context, e *Expense) error
 	// Delete возвращает ErrNotFound, если траты нет в этом хабе.
 	Delete(ctx context.Context, hubID hub.ID, id ID) error
 }
@@ -84,7 +86,7 @@ func (s *Service) Record(ctx context.Context, in RecordInput) (*Expense, error) 
 	if err != nil {
 		return nil, err
 	}
-	cat, err := s.resolveCategory(ctx, in)
+	cat, err := s.resolveCategory(ctx, in.Actor, in.HubID, in.CategoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -109,27 +111,105 @@ func (s *Service) List(ctx context.Context, actor user.ID, hubID hub.ID, f Filte
 	return s.repo.List(ctx, hubID, f)
 }
 
+// UpdateInput — частичное изменение. Указатель nil означает «не трогать»,
+// поэтому можно отличить «не менять заметку» от «стереть заметку» (""):
+// в Laravel для этого есть $request->has(), в Go — указатели.
+type UpdateInput struct {
+	CategoryID *category.ID // 0 — перенести в «Прочее»
+	Amount     *money.Money
+	Note       *string
+	Tags       *[]string // пустой срез — убрать все теги
+	SpentAt    *time.Time
+}
+
+// Update разрешён автору траты и владельцу хаба. Автор при этом не меняется.
+func (s *Service) Update(ctx context.Context, actor user.ID, hubID hub.ID, id ID, in UpdateInput) (*Expense, error) {
+	e, err := s.getModifiable(ctx, actor, hubID, id)
+	if err != nil {
+		return nil, err
+	}
+
+	amount := e.Amount
+	if in.Amount != nil {
+		h, err := s.hubs.Get(ctx, actor, hubID)
+		if err != nil {
+			return nil, err
+		}
+		if in.Amount.Currency() != h.Currency {
+			return nil, fmt.Errorf("%w: hub uses %s, got %s", ErrWrongCurrency, h.Currency, in.Amount.Currency())
+		}
+		amount = *in.Amount
+	}
+
+	categoryID := e.CategoryID
+	if in.CategoryID != nil {
+		cat, err := s.resolveCategory(ctx, actor, hubID, *in.CategoryID)
+		if err != nil {
+			return nil, err
+		}
+		categoryID = cat.ID
+	}
+
+	tags := e.Tags
+	if in.Tags != nil {
+		if tags, err = ParseTags(*in.Tags); err != nil {
+			return nil, err
+		}
+		if err := s.checkTagsAgainstCategories(ctx, actor, hubID, tags); err != nil {
+			return nil, err
+		}
+	}
+
+	note, spentAt := e.Note, e.SpentAt
+	if in.Note != nil {
+		note = *in.Note
+	}
+	if in.SpentAt != nil {
+		spentAt = *in.SpentAt
+	}
+
+	// Прогоняем результат через New: все инварианты проверяются в одном месте.
+	updated, err := New(hubID, e.AuthorID, categoryID, amount, note, tags, spentAt, s.now())
+	if err != nil {
+		return nil, err
+	}
+	updated.ID, updated.CreatedAt = e.ID, e.CreatedAt
+	if err := s.repo.Update(ctx, updated); err != nil {
+		return nil, fmt.Errorf("update expense: %w", err)
+	}
+	return updated, nil
+}
+
 // Delete разрешён автору траты и владельцу хаба.
 func (s *Service) Delete(ctx context.Context, actor user.ID, hubID hub.ID, id ID) error {
-	m, err := s.hubs.Member(ctx, hubID, actor)
-	if err != nil {
+	if _, err := s.getModifiable(ctx, actor, hubID, id); err != nil {
 		return err
-	}
-	e, err := s.repo.Get(ctx, hubID, id)
-	if err != nil {
-		return err
-	}
-	if e.AuthorID != actor && !m.IsOwner() {
-		return ErrForbidden
 	}
 	return s.repo.Delete(ctx, hubID, id)
 }
 
-func (s *Service) resolveCategory(ctx context.Context, in RecordInput) (*category.Category, error) {
-	if in.CategoryID == 0 {
-		return s.categories.Default(ctx, in.Actor, in.HubID)
+// getModifiable возвращает трату, если actor может её менять:
+// он автор или владелец хаба.
+func (s *Service) getModifiable(ctx context.Context, actor user.ID, hubID hub.ID, id ID) (*Expense, error) {
+	m, err := s.hubs.Member(ctx, hubID, actor)
+	if err != nil {
+		return nil, err
 	}
-	return s.categories.Get(ctx, in.Actor, in.HubID, in.CategoryID)
+	e, err := s.repo.Get(ctx, hubID, id)
+	if err != nil {
+		return nil, err
+	}
+	if e.AuthorID != actor && !m.IsOwner() {
+		return nil, ErrForbidden
+	}
+	return e, nil
+}
+
+func (s *Service) resolveCategory(ctx context.Context, actor user.ID, hubID hub.ID, id category.ID) (*category.Category, error) {
+	if id == 0 {
+		return s.categories.Default(ctx, actor, hubID)
+	}
+	return s.categories.Get(ctx, actor, hubID, id)
 }
 
 // checkTagsAgainstCategories не даёт завести тег «транспорт», если

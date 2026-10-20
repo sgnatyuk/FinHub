@@ -16,6 +16,7 @@ import (
 type memRepo struct {
 	nextID category.ID
 	items  []category.Category
+	moved  map[category.ID]category.ID // удалённая → куда перенесли траты
 }
 
 func (r *memRepo) Create(_ context.Context, c *category.Category) error {
@@ -58,16 +59,44 @@ func (r *memRepo) List(_ context.Context, hubID hub.ID) ([]category.Category, er
 	return out, nil
 }
 
-// members — фиксированный список «кто в каком хабе».
-type members map[hub.ID][]user.ID
-
-func (m members) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
-	for _, u := range m[hubID] {
-		if u == userID {
-			return &hub.Member{HubID: hubID, UserID: userID, Role: hub.RoleMember}, nil
+func (r *memRepo) Rename(_ context.Context, hubID hub.ID, id category.ID, name string) error {
+	for _, it := range r.items {
+		if it.HubID == hubID && it.ID != id && category.SameName(it.Name, name) {
+			return category.ErrDuplicateName
 		}
 	}
-	return nil, hub.ErrNotMember
+	for i := range r.items {
+		if r.items[i].HubID == hubID && r.items[i].ID == id {
+			r.items[i].Name = name
+			return nil
+		}
+	}
+	return category.ErrNotFound
+}
+
+func (r *memRepo) Delete(_ context.Context, hubID hub.ID, id, moveTo category.ID) error {
+	for i, it := range r.items {
+		if it.HubID == hubID && it.ID == id {
+			r.items = append(r.items[:i], r.items[i+1:]...)
+			if r.moved == nil {
+				r.moved = map[category.ID]category.ID{}
+			}
+			r.moved[id] = moveTo
+			return nil
+		}
+	}
+	return category.ErrNotFound
+}
+
+// members — фиксированный список «кто в каком хабе с какой ролью».
+type members map[hub.ID]map[user.ID]hub.Role
+
+func (m members) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
+	role, ok := m[hubID][userID]
+	if !ok {
+		return nil, hub.ErrNotMember
+	}
+	return &hub.Member{HubID: hubID, UserID: userID, Role: role}, nil
 }
 
 const (
@@ -80,7 +109,10 @@ const (
 
 func newService() (*category.Service, *memRepo) {
 	repo := &memRepo{}
-	return category.NewService(repo, members{family: {dad, mom}, personal: {dad}}), repo
+	return category.NewService(repo, members{
+		family:   {dad: hub.RoleOwner, mom: hub.RoleMember},
+		personal: {dad: hub.RoleOwner},
+	}), repo
 }
 
 func TestCreate(t *testing.T) {
@@ -190,6 +222,69 @@ func TestCreateStarter(t *testing.T) {
 
 	if _, err := svc.CreateStarter(ctx, mom, personal); !errors.Is(err, hub.ErrNotMember) {
 		t.Errorf("error = %v, want ErrNotMember", err)
+	}
+}
+
+func TestRename(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newService()
+	cafe, err := svc.Create(ctx, dad, family, "Кафе")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(ctx, dad, family, "Продукты"); err != nil {
+		t.Fatal(err)
+	}
+	def, err := svc.Default(ctx, dad, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		actor   user.ID
+		id      category.ID
+		newName string
+		wantErr error
+	}{
+		{name: "member cannot", actor: mom, id: cafe.ID, newName: "Рестораны", wantErr: hub.ErrForbidden},
+		{name: "taken", actor: dad, id: cafe.ID, newName: "продукты", wantErr: category.ErrDuplicateName},
+		{name: "default", actor: dad, id: def.ID, newName: "Разное", wantErr: category.ErrDefault},
+		{name: "empty", actor: dad, id: cafe.ID, newName: " ", wantErr: category.ErrInvalidName},
+		{name: "ok", actor: dad, id: cafe.ID, newName: "Рестораны"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := svc.Rename(ctx, tt.actor, family, tt.id, tt.newName); !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDeleteMovesToDefault(t *testing.T) {
+	ctx := context.Background()
+	svc, repo := newService()
+	cafe, err := svc.Create(ctx, dad, family, "Кафе")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Delete(ctx, mom, family, cafe.ID); !errors.Is(err, hub.ErrForbidden) {
+		t.Errorf("member: error = %v, want ErrForbidden", err)
+	}
+	if err := svc.Delete(ctx, dad, family, cafe.ID); err != nil {
+		t.Fatal(err)
+	}
+	def, err := svc.Default(ctx, dad, family)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.moved[cafe.ID] != def.ID {
+		t.Errorf("expenses moved to %d, want default %d", repo.moved[cafe.ID], def.ID)
+	}
+	if err := svc.Delete(ctx, dad, family, def.ID); !errors.Is(err, category.ErrDefault) {
+		t.Errorf("delete default: error = %v, want ErrDefault", err)
 	}
 }
 

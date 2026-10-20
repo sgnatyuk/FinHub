@@ -28,6 +28,7 @@ var (
 	ErrNotFound      = errors.New("category not found")
 	ErrInvalidName   = errors.New("invalid category name")
 	ErrDuplicateName = errors.New("category name already exists")
+	ErrDefault       = errors.New("default category cannot be renamed or deleted")
 )
 
 type Category struct {
@@ -40,11 +41,22 @@ type Category struct {
 // New проверяет инварианты и возвращает категорию без ID:
 // ID назначит хранилище при сохранении.
 func New(hubID hub.ID, name string, now time.Time) (*Category, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || utf8.RuneCountInString(name) > maxNameLen {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidName, name)
+	name, err := normalizeName(name)
+	if err != nil {
+		return nil, err
 	}
 	return &Category{HubID: hubID, Name: name, CreatedAt: now}, nil
+}
+
+// IsDefault сообщает, что это «Прочее».
+func (c Category) IsDefault() bool { return SameName(c.Name, DefaultName) }
+
+func normalizeName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || utf8.RuneCountInString(name) > maxNameLen {
+		return "", fmt.Errorf("%w: %q", ErrInvalidName, name)
+	}
+	return name, nil
 }
 
 // SameName сравнивает имена без учёта регистра: «Транспорт» и «транспорт»
