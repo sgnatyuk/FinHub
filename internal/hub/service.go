@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/OWNER/finhub/internal/money"
 	"github.com/OWNER/finhub/internal/user"
 )
 
 type Repository interface {
 	// Create атомарно сохраняет хаб и его владельца, заполняет h.ID.
 	Create(ctx context.Context, h *Hub, owner user.ID, joinedAt time.Time) error
+	// Get возвращает ErrNotFound, если хаба нет.
+	Get(ctx context.Context, id ID) (*Hub, error)
+	SetCurrency(ctx context.Context, id ID, cur money.Currency) error
 	// Member возвращает ErrNotMember, если пользователь не состоит в хабе.
 	Member(ctx context.Context, hubID ID, userID user.ID) (*Member, error)
 	// AddMember возвращает ErrAlreadyMember при повторном добавлении.
@@ -43,6 +47,31 @@ func (s *Service) Create(ctx context.Context, owner user.ID, name string) (*Hub,
 // CreatePersonal вызывается при регистрации пользователя.
 func (s *Service) CreatePersonal(ctx context.Context, owner user.ID) (*Hub, error) {
 	return s.Create(ctx, owner, PersonalName)
+}
+
+// Get возвращает хаб, если actor в нём состоит.
+func (s *Service) Get(ctx context.Context, actor user.ID, hubID ID) (*Hub, error) {
+	if _, err := s.repo.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	return s.repo.Get(ctx, hubID)
+}
+
+// SetCurrency меняет валюту хаба (команда /config). Только владелец.
+// Старые траты остаются в прежней валюте, статистика считает валюты раздельно.
+func (s *Service) SetCurrency(ctx context.Context, actor user.ID, hubID ID, cur money.Currency) error {
+	m, err := s.repo.Member(ctx, hubID, actor)
+	if err != nil {
+		return err
+	}
+	if !m.IsOwner() {
+		return fmt.Errorf("%w: only owner can change currency", ErrForbidden)
+	}
+	// Проверяем через money.New, чтобы не дублировать список валют.
+	if _, err := money.New(0, cur); err != nil {
+		return err
+	}
+	return s.repo.SetCurrency(ctx, hubID, cur)
 }
 
 // Member — проверка доступа, которой пользуются другие пакеты.

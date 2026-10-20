@@ -107,10 +107,17 @@ func (f *fakeCategories) Default(_ context.Context, _ user.ID, hubID hub.ID) (*c
 	return &c, nil
 }
 
-// fakeMembers: хаб → пользователь → роль.
-type fakeMembers map[hub.ID]map[user.ID]hub.Role
+// fakeHubs: хаб → пользователь → роль. Все хабы в рублях.
+type fakeHubs map[hub.ID]map[user.ID]hub.Role
 
-func (f fakeMembers) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
+func (f fakeHubs) Get(ctx context.Context, actor user.ID, hubID hub.ID) (*hub.Hub, error) {
+	if _, err := f.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	return &hub.Hub{ID: hubID, Currency: money.RUB}, nil
+}
+
+func (f fakeHubs) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
 	role, ok := f[hubID][userID]
 	if !ok {
 		return nil, hub.ErrNotMember
@@ -136,16 +143,25 @@ func newService() (*expense.Service, *memExpenses) {
 		{ID: transport, HubID: family, Name: "Транспорт"},
 		{ID: hobby, HubID: personal, Name: "Хобби"},
 	}}
-	members := fakeMembers{
+	hubs := fakeHubs{
 		family:   {dad: hub.RoleOwner, mom: hub.RoleMember},
 		personal: {dad: hub.RoleOwner},
 	}
-	return expense.NewService(repo, cats, members), repo
+	return expense.NewService(repo, cats, hubs), repo
 }
 
 func rub(t *testing.T, minor int64) money.Money {
 	t.Helper()
 	m, err := money.New(minor, money.RUB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func usd(t *testing.T, minor int64) money.Money {
+	t.Helper()
+	m, err := money.New(minor, money.USD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +185,11 @@ func TestRecord(t *testing.T) {
 			name:    "not a member",
 			in:      expense.RecordInput{Actor: stranger, HubID: family, CategoryID: transport, Amount: rub(t, 100)},
 			wantErr: hub.ErrNotMember,
+		},
+		{
+			name:    "wrong currency",
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: usd(t, 100)},
+			wantErr: expense.ErrWrongCurrency,
 		},
 		{
 			name:    "zero amount",
@@ -321,5 +342,5 @@ func TestDelete(t *testing.T) {
 // интерфейсы, которые объявил пакет expense.
 var (
 	_ expense.Categories = (*category.Service)(nil)
-	_ expense.Members    = (*hub.Service)(nil)
+	_ expense.Hubs       = (*hub.Service)(nil)
 )

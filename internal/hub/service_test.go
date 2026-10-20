@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OWNER/finhub/internal/hub"
+	"github.com/OWNER/finhub/internal/money"
 	"github.com/OWNER/finhub/internal/user"
 )
 
@@ -22,6 +23,25 @@ func (r *memRepo) Create(_ context.Context, h *hub.Hub, owner user.ID, joinedAt 
 	r.hubs = append(r.hubs, *h)
 	r.members = append(r.members, hub.Member{HubID: h.ID, UserID: owner, Role: hub.RoleOwner, JoinedAt: joinedAt})
 	return nil
+}
+
+func (r *memRepo) Get(_ context.Context, id hub.ID) (*hub.Hub, error) {
+	for _, h := range r.hubs {
+		if h.ID == id {
+			return &h, nil
+		}
+	}
+	return nil, hub.ErrNotFound
+}
+
+func (r *memRepo) SetCurrency(_ context.Context, id hub.ID, cur money.Currency) error {
+	for i := range r.hubs {
+		if r.hubs[i].ID == id {
+			r.hubs[i].Currency = cur
+			return nil
+		}
+	}
+	return hub.ErrNotFound
 }
 
 func (r *memRepo) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
@@ -134,5 +154,46 @@ func TestListForUser(t *testing.T) {
 	momHubs, _ := svc.ListForUser(ctx, mom)
 	if len(dadHubs) != 2 || len(momHubs) != 1 {
 		t.Errorf("dad has %d hubs, mom has %d; want 2 and 1", len(dadHubs), len(momHubs))
+	}
+}
+
+func TestSetCurrency(t *testing.T) {
+	ctx := context.Background()
+	svc := hub.NewService(&memRepo{})
+	h, err := svc.Create(ctx, dad, "Семья")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Currency != money.RUB {
+		t.Fatalf("default currency = %q, want RUB", h.Currency)
+	}
+	if err := svc.AddMember(ctx, dad, h.ID, mom); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		actor   user.ID
+		cur     money.Currency
+		wantErr error
+	}{
+		{name: "member cannot", actor: mom, cur: money.USD, wantErr: hub.ErrForbidden},
+		{name: "unsupported", actor: dad, cur: "EUR", wantErr: money.ErrInvalidCurrency},
+		{name: "owner switches to USD", actor: dad, cur: money.USD},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := svc.SetCurrency(ctx, tt.actor, h.ID, tt.cur); !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	got, err := svc.Get(ctx, mom, h.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Currency != money.USD {
+		t.Errorf("currency = %q, want USD", got.Currency)
 	}
 }

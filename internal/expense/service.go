@@ -32,8 +32,11 @@ type Categories interface {
 	Default(ctx context.Context, actor user.ID, hubID hub.ID) (*category.Category, error)
 }
 
-// Members — проверка участия в хабе. Её реализует hub.Service.
-type Members interface {
+// Hubs — что сервису трат нужно от хабов. Его реализует hub.Service.
+type Hubs interface {
+	// Get возвращает хаб (с его валютой), если actor в нём состоит.
+	Get(ctx context.Context, actor user.ID, hubID hub.ID) (*hub.Hub, error)
+	// Member возвращает участника с ролью или hub.ErrNotMember.
 	Member(ctx context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error)
 }
 
@@ -49,12 +52,12 @@ type Filter struct {
 type Service struct {
 	repo       Repository
 	categories Categories
-	members    Members
+	hubs       Hubs
 	now        func() time.Time
 }
 
-func NewService(repo Repository, categories Categories, members Members) *Service {
-	return &Service{repo: repo, categories: categories, members: members, now: time.Now}
+func NewService(repo Repository, categories Categories, hubs Hubs) *Service {
+	return &Service{repo: repo, categories: categories, hubs: hubs, now: time.Now}
 }
 
 // RecordInput — входные данные одной структурой: удобнее, чем восемь
@@ -63,15 +66,19 @@ type RecordInput struct {
 	Actor      user.ID // автор траты
 	HubID      hub.ID
 	CategoryID category.ID // 0 — категория по умолчанию («Прочее»)
-	Amount     money.Money
+	Amount     money.Money // в валюте хаба
 	Note       string
 	Tags       []string  // сырой ввод, нормализуется в ParseTags
 	SpentAt    time.Time // нулевое значение — сейчас
 }
 
 func (s *Service) Record(ctx context.Context, in RecordInput) (*Expense, error) {
-	if _, err := s.members.Member(ctx, in.HubID, in.Actor); err != nil {
+	h, err := s.hubs.Get(ctx, in.Actor, in.HubID)
+	if err != nil {
 		return nil, err
+	}
+	if in.Amount.Currency() != h.Currency {
+		return nil, fmt.Errorf("%w: hub uses %s, got %s", ErrWrongCurrency, h.Currency, in.Amount.Currency())
 	}
 	tags, err := ParseTags(in.Tags)
 	if err != nil {
@@ -96,7 +103,7 @@ func (s *Service) Record(ctx context.Context, in RecordInput) (*Expense, error) 
 }
 
 func (s *Service) List(ctx context.Context, actor user.ID, hubID hub.ID, f Filter) ([]Expense, error) {
-	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+	if _, err := s.hubs.Member(ctx, hubID, actor); err != nil {
 		return nil, err
 	}
 	return s.repo.List(ctx, hubID, f)
@@ -104,7 +111,7 @@ func (s *Service) List(ctx context.Context, actor user.ID, hubID hub.ID, f Filte
 
 // Delete разрешён автору траты и владельцу хаба.
 func (s *Service) Delete(ctx context.Context, actor user.ID, hubID hub.ID, id ID) error {
-	m, err := s.members.Member(ctx, hubID, actor)
+	m, err := s.hubs.Member(ctx, hubID, actor)
 	if err != nil {
 		return err
 	}

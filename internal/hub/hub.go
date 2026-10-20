@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/OWNER/finhub/internal/money"
 	"github.com/OWNER/finhub/internal/user"
 )
 
@@ -39,8 +40,10 @@ var (
 )
 
 type Hub struct {
-	ID        ID
-	Name      string
+	ID   ID
+	Name string
+	// Currency — валюта, в которой участники записывают траты хаба.
+	Currency  money.Currency
 	CreatedAt time.Time
 }
 
@@ -54,10 +57,12 @@ type Member struct {
 // IsOwner — маленький метод на значении вместо проверки роли по всему коду.
 func (m Member) IsOwner() bool { return m.Role == RoleOwner }
 
+// New создаёт хаб в валюте по умолчанию (RUB); сменить её можно
+// через Service.SetCurrency.
 func New(name string, now time.Time) (*Hub, error) {
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > maxNameLen {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
-	return &Hub{Name: name, CreatedAt: now}, nil
+	return &Hub{Name: name, Currency: money.RUB, CreatedAt: now}, nil
 }

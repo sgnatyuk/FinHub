@@ -15,8 +15,12 @@ import (
 // Currency — трёхбуквенный код валюты по ISO 4217, например "RUB".
 type Currency string
 
-// RUB — валюта по умолчанию.
-const RUB Currency = "RUB"
+// Поддерживаемые валюты. Новая валюта — это одна строка здесь
+// и одна в validCurrency.
+const (
+	RUB Currency = "RUB" // валюта по умолчанию
+	USD Currency = "USD"
+)
 
 var (
 	ErrInvalidCurrency  = errors.New("money: invalid currency")
@@ -112,14 +116,19 @@ func (m Money) String() string {
 	return fmt.Sprintf("%s%d.%02d %s", sign, units, cents, m.currency)
 }
 
+// ParseCurrency разбирает ввод пользователя: "usd", " RUB ".
+func ParseCurrency(s string) (Currency, error) {
+	c := Currency(strings.ToUpper(strings.TrimSpace(s)))
+	if !validCurrency(c) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidCurrency, s)
+	}
+	return c, nil
+}
+
 func validCurrency(c Currency) bool {
-	if len(c) != 3 {
-		return false
+	switch c {
+	case RUB, USD:
+		return true
 	}
-	for _, r := range c {
-		if r < 'A' || r > 'Z' {
-			return false
-		}
-	}
-	return true
+	return false
 }

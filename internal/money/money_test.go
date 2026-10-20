@@ -43,10 +43,22 @@ func TestParse(t *testing.T) {
 }
 
 func TestNewRejectsBadCurrency(t *testing.T) {
-	for _, c := range []money.Currency{"", "rub", "RU", "RUBL"} {
+	for _, c := range []money.Currency{"", "rub", "RU", "RUBL", "EUR"} {
 		if _, err := money.New(1, c); !errors.Is(err, money.ErrInvalidCurrency) {
 			t.Errorf("New(1, %q) error = %v, want ErrInvalidCurrency", c, err)
 		}
+	}
+}
+
+func TestParseCurrency(t *testing.T) {
+	for in, want := range map[string]money.Currency{"rub": money.RUB, " USD ": money.USD} {
+		got, err := money.ParseCurrency(in)
+		if err != nil || got != want {
+			t.Errorf("ParseCurrency(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if _, err := money.ParseCurrency("btc"); !errors.Is(err, money.ErrInvalidCurrency) {
+		t.Errorf("error = %v, want ErrInvalidCurrency", err)
 	}
 }
 
@@ -61,7 +73,7 @@ func TestAdd(t *testing.T) {
 		t.Errorf("sum = %d, want 400", sum.Amount())
 	}
 
-	if _, err := a.Add(mustNew(t, 1, "USD")); !errors.Is(err, money.ErrCurrencyMismatch) {
+	if _, err := a.Add(mustNew(t, 1, money.USD)); !errors.Is(err, money.ErrCurrencyMismatch) {
 		t.Errorf("error = %v, want ErrCurrencyMismatch", err)
 	}
 	if _, err := mustNew(t, math.MaxInt64, money.RUB).Add(a); !errors.Is(err, money.ErrOverflow) {
