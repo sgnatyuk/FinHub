@@ -17,6 +17,8 @@ import (
 // и запоминает фильтр, с которым его вызвали.
 type fakeRepo struct {
 	gotFilter expense.Filter
+	gotAuthor user.ID
+	gotHubs   []hub.ID
 }
 
 func (r *fakeRepo) ByCategory(_ context.Context, _ hub.ID, f expense.Filter) ([]stats.CategoryTotal, error) {
@@ -36,6 +38,24 @@ func (r *fakeRepo) ByAuthor(context.Context, hub.ID, expense.Filter) ([]stats.Au
 	return nil, nil
 }
 
+func (r *fakeRepo) AuthorByHub(_ context.Context, author user.ID, hubIDs []hub.ID, f expense.Filter) ([]stats.HubTotal, error) {
+	r.gotAuthor, r.gotHubs, r.gotFilter = author, hubIDs, f
+	return []stats.HubTotal{
+		{Name: "Личное", Total: rub(100)},
+		{Name: "Семья", Total: rub(500)},
+	}, nil
+}
+
+func (r *fakeRepo) AuthorByCategoryName(context.Context, user.ID, []hub.ID, expense.Filter) ([]stats.CategoryTotal, error) {
+	return nil, nil
+}
+
+type fakeHubs map[user.ID][]hub.Hub
+
+func (f fakeHubs) ListForUser(_ context.Context, userID user.ID) ([]hub.Hub, error) {
+	return f[userID], nil
+}
+
 type onlyMember user.ID
 
 func (m onlyMember) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
@@ -52,7 +72,7 @@ func rub(minor int64) money.Money {
 
 func TestByCategorySortsAndPassesFilter(t *testing.T) {
 	repo := &fakeRepo{}
-	svc := stats.NewService(repo, onlyMember(1))
+	svc := stats.NewService(repo, onlyMember(1), fakeHubs{})
 	f := stats.Month(2026, time.October, time.UTC)
 
 	got, err := svc.ByCategory(context.Background(), 1, 10, f)
@@ -71,7 +91,7 @@ func TestByCategorySortsAndPassesFilter(t *testing.T) {
 }
 
 func TestByCategoryNotMember(t *testing.T) {
-	svc := stats.NewService(&fakeRepo{}, onlyMember(1))
+	svc := stats.NewService(&fakeRepo{}, onlyMember(1), fakeHubs{})
 	_, err := svc.ByCategory(context.Background(), 2, 10, expense.Filter{})
 	if !errors.Is(err, hub.ErrNotMember) {
 		t.Errorf("error = %v, want ErrNotMember", err)
@@ -99,4 +119,35 @@ func TestMonth(t *testing.T) {
 	}
 }
 
-var _ stats.Members = (*hub.Service)(nil)
+func TestMineByHub(t *testing.T) {
+	repo := &fakeRepo{}
+	hubs := fakeHubs{1: {{ID: 10, Name: "Личное"}, {ID: 20, Name: "Семья"}}}
+	svc := stats.NewService(repo, onlyMember(1), hubs)
+
+	got, err := svc.MineByHub(context.Background(), 1, expense.Filter{CategoryID: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "Семья" {
+		t.Errorf("got %+v, want Семья first", got)
+	}
+	if repo.gotAuthor != 1 || len(repo.gotHubs) != 2 {
+		t.Errorf("repo got author %d hubs %v, want author 1 and both hubs", repo.gotAuthor, repo.gotHubs)
+	}
+	if repo.gotFilter.CategoryID != 0 {
+		t.Errorf("CategoryID = %d, want it reset to 0 across hubs", repo.gotFilter.CategoryID)
+	}
+}
+
+func TestMineWithoutHubs(t *testing.T) {
+	svc := stats.NewService(&fakeRepo{}, onlyMember(1), fakeHubs{})
+	got, err := svc.MineByHub(context.Background(), 1, expense.Filter{})
+	if err != nil || got != nil {
+		t.Errorf("got %v, %v; want nil, nil", got, err)
+	}
+}
+
+var (
+	_ stats.Members = (*hub.Service)(nil)
+	_ stats.Hubs    = (*hub.Service)(nil)
+)
