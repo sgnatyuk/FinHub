@@ -6,33 +6,86 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/OWNER/finhub/internal/hub"
 	"github.com/OWNER/finhub/internal/user"
 )
 
 // Repository — то, что сервису нужно от хранилища. Реализация
 // (Postgres, in-memory в тестах) удовлетворяет интерфейс неявно.
+// Права здесь не проверяются: это работа сервиса.
 type Repository interface {
 	// Create сохраняет категорию и заполняет c.ID.
-	// Возвращает ErrDuplicateName, если имя уже занято (без учёта регистра).
+	// Возвращает ErrDuplicateName, если имя в хабе занято (без учёта регистра).
 	Create(ctx context.Context, c *Category) error
-	// Get возвращает ErrNotFound, если категории нет или она чужая.
-	Get(ctx context.Context, userID user.ID, id ID) (*Category, error)
+	// Get возвращает ErrNotFound, если категории нет в этом хабе.
+	Get(ctx context.Context, hubID hub.ID, id ID) (*Category, error)
 	// GetByName ищет без учёта регистра; ErrNotFound, если нет.
-	GetByName(ctx context.Context, userID user.ID, name string) (*Category, error)
-	List(ctx context.Context, userID user.ID) ([]Category, error)
+	GetByName(ctx context.Context, hubID hub.ID, name string) (*Category, error)
+	List(ctx context.Context, hubID hub.ID) ([]Category, error)
+}
+
+// Members — проверка участия в хабе. Её реализует hub.Service.
+type Members interface {
+	Member(ctx context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error)
 }
 
 type Service struct {
-	repo Repository
-	now  func() time.Time
+	repo    Repository
+	members Members
+	now     func() time.Time
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo, now: time.Now}
+func NewService(repo Repository, members Members) *Service {
+	return &Service{repo: repo, members: members, now: time.Now}
 }
 
-func (s *Service) Create(ctx context.Context, userID user.ID, name string) (*Category, error) {
-	c, err := New(userID, name, s.now())
+// Каждый метод принимает actor — того, кто действует. Вместо Auth::user()
+// из глобального состояния он передаётся явно, поэтому сервис легко
+// тестировать и вызывать из CLI и бота одинаково.
+
+func (s *Service) Create(ctx context.Context, actor user.ID, hubID hub.ID, name string) (*Category, error) {
+	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	return s.create(ctx, hubID, name)
+}
+
+func (s *Service) Get(ctx context.Context, actor user.ID, hubID hub.ID, id ID) (*Category, error) {
+	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	return s.repo.Get(ctx, hubID, id)
+}
+
+func (s *Service) List(ctx context.Context, actor user.ID, hubID hub.ID) ([]Category, error) {
+	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	return s.repo.List(ctx, hubID)
+}
+
+// Default возвращает категорию «Прочее», создавая её при первом обращении.
+func (s *Service) Default(ctx context.Context, actor user.ID, hubID hub.ID) (*Category, error) {
+	if _, err := s.members.Member(ctx, hubID, actor); err != nil {
+		return nil, err
+	}
+	c, err := s.repo.GetByName(ctx, hubID, DefaultName)
+	if err == nil {
+		return c, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, fmt.Errorf("get default category: %w", err)
+	}
+	c, err = s.create(ctx, hubID, DefaultName)
+	if errors.Is(err, ErrDuplicateName) {
+		// Кто-то создал её параллельно — просто перечитываем.
+		return s.repo.GetByName(ctx, hubID, DefaultName)
+	}
+	return c, err
+}
+
+func (s *Service) create(ctx context.Context, hubID hub.ID, name string) (*Category, error) {
+	c, err := New(hubID, name, s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -40,29 +93,4 @@ func (s *Service) Create(ctx context.Context, userID user.ID, name string) (*Cat
 		return nil, fmt.Errorf("create category: %w", err)
 	}
 	return c, nil
-}
-
-func (s *Service) Get(ctx context.Context, userID user.ID, id ID) (*Category, error) {
-	return s.repo.Get(ctx, userID, id)
-}
-
-func (s *Service) List(ctx context.Context, userID user.ID) ([]Category, error) {
-	return s.repo.List(ctx, userID)
-}
-
-// Default возвращает категорию «Прочее», создавая её при первом обращении.
-func (s *Service) Default(ctx context.Context, userID user.ID) (*Category, error) {
-	c, err := s.repo.GetByName(ctx, userID, DefaultName)
-	if err == nil {
-		return c, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return nil, fmt.Errorf("get default category: %w", err)
-	}
-	c, err = s.Create(ctx, userID, DefaultName)
-	if errors.Is(err, ErrDuplicateName) {
-		// Кто-то создал её параллельно — просто перечитываем.
-		return s.repo.GetByName(ctx, userID, DefaultName)
-	}
-	return c, err
 }

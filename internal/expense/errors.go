@@ -13,4 +13,5 @@ var (
 	ErrTooManyTags    = errors.New("too many tags")
 	ErrTagIsCategory  = errors.New("tag duplicates a category name")
 	ErrFutureSpending = errors.New("spending date is in the future")
+	ErrForbidden      = errors.New("only the author or hub owner can do this")
 )

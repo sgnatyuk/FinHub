@@ -9,6 +9,7 @@ import (
 
 	"github.com/OWNER/finhub/internal/category"
 	"github.com/OWNER/finhub/internal/expense"
+	"github.com/OWNER/finhub/internal/hub"
 	"github.com/OWNER/finhub/internal/money"
 	"github.com/OWNER/finhub/internal/user"
 )
@@ -25,16 +26,24 @@ func (r *memExpenses) Create(_ context.Context, e *expense.Expense) error {
 	return nil
 }
 
-func (r *memExpenses) List(_ context.Context, userID user.ID, f expense.Filter) ([]expense.Expense, error) {
+func (r *memExpenses) Get(_ context.Context, hubID hub.ID, id expense.ID) (*expense.Expense, error) {
+	for _, e := range r.items {
+		if e.HubID == hubID && e.ID == id {
+			return &e, nil
+		}
+	}
+	return nil, expense.ErrNotFound
+}
+
+func (r *memExpenses) List(_ context.Context, hubID hub.ID, f expense.Filter) ([]expense.Expense, error) {
 	var out []expense.Expense
 	for _, e := range r.items {
-		if e.UserID != userID ||
+		if e.HubID != hubID ||
 			(!f.From.IsZero() && e.SpentAt.Before(f.From)) ||
 			(!f.To.IsZero() && !e.SpentAt.Before(f.To)) ||
-			(f.CategoryID != 0 && e.CategoryID != f.CategoryID) {
-			continue
-		}
-		if !hasAll(e.Tags, f.Tags) {
+			(f.AuthorID != 0 && e.AuthorID != f.AuthorID) ||
+			(f.CategoryID != 0 && e.CategoryID != f.CategoryID) ||
+			!hasAll(e.Tags, f.Tags) {
 			continue
 		}
 		out = append(out, e)
@@ -42,9 +51,9 @@ func (r *memExpenses) List(_ context.Context, userID user.ID, f expense.Filter) 
 	return out, nil
 }
 
-func (r *memExpenses) Delete(_ context.Context, userID user.ID, id expense.ID) error {
+func (r *memExpenses) Delete(_ context.Context, hubID hub.ID, id expense.ID) error {
 	for i, e := range r.items {
-		if e.UserID == userID && e.ID == id {
+		if e.HubID == hubID && e.ID == id {
 			r.items = slices.Delete(r.items, i, i+1)
 			return nil
 		}
@@ -63,52 +72,75 @@ func hasAll(have, want []expense.Tag) bool {
 
 // fakeCategories реализует expense.Categories. Сервис трат не знает,
 // что за ним стоит: настоящий category.Service или эта заглушка.
+// Права проверяет сам сервис трат, поэтому здесь actor игнорируется.
 type fakeCategories struct {
 	items []category.Category
 }
 
-func (f *fakeCategories) Get(_ context.Context, userID user.ID, id category.ID) (*category.Category, error) {
+func (f *fakeCategories) Get(_ context.Context, _ user.ID, hubID hub.ID, id category.ID) (*category.Category, error) {
 	for _, c := range f.items {
-		if c.UserID == userID && c.ID == id {
+		if c.HubID == hubID && c.ID == id {
 			return &c, nil
 		}
 	}
 	return nil, category.ErrNotFound
 }
 
-func (f *fakeCategories) List(_ context.Context, userID user.ID) ([]category.Category, error) {
+func (f *fakeCategories) List(_ context.Context, _ user.ID, hubID hub.ID) ([]category.Category, error) {
 	var out []category.Category
 	for _, c := range f.items {
-		if c.UserID == userID {
+		if c.HubID == hubID {
 			out = append(out, c)
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeCategories) Default(_ context.Context, userID user.ID) (*category.Category, error) {
+func (f *fakeCategories) Default(_ context.Context, _ user.ID, hubID hub.ID) (*category.Category, error) {
 	for _, c := range f.items {
-		if c.UserID == userID && c.Name == category.DefaultName {
+		if c.HubID == hubID && c.Name == category.DefaultName {
 			return &c, nil
 		}
 	}
-	c := category.Category{ID: category.ID(len(f.items) + 1), UserID: userID, Name: category.DefaultName}
+	c := category.Category{ID: category.ID(100 + len(f.items)), HubID: hubID, Name: category.DefaultName}
 	f.items = append(f.items, c)
 	return &c, nil
 }
 
+// fakeMembers: хаб → пользователь → роль.
+type fakeMembers map[hub.ID]map[user.ID]hub.Role
+
+func (f fakeMembers) Member(_ context.Context, hubID hub.ID, userID user.ID) (*hub.Member, error) {
+	role, ok := f[hubID][userID]
+	if !ok {
+		return nil, hub.ErrNotMember
+	}
+	return &hub.Member{HubID: hubID, UserID: userID, Role: role}, nil
+}
+
 const (
-	alice     user.ID     = 1
-	bob       user.ID     = 2
-	transport category.ID = 10
+	dad      user.ID = 1
+	mom      user.ID = 2
+	stranger user.ID = 3
+
+	family   hub.ID = 10
+	personal hub.ID = 20
+
+	transport category.ID = 1 // в хабе family
+	hobby     category.ID = 2 // в хабе personal
 )
 
 func newService() (*expense.Service, *memExpenses) {
 	repo := &memExpenses{}
 	cats := &fakeCategories{items: []category.Category{
-		{ID: transport, UserID: alice, Name: "Транспорт"},
+		{ID: transport, HubID: family, Name: "Транспорт"},
+		{ID: hobby, HubID: personal, Name: "Хобби"},
 	}}
-	return expense.NewService(repo, cats), repo
+	members := fakeMembers{
+		family:   {dad: hub.RoleOwner, mom: hub.RoleMember},
+		personal: {dad: hub.RoleOwner},
+	}
+	return expense.NewService(repo, cats, members), repo
 }
 
 func rub(t *testing.T, minor int64) money.Money {
@@ -131,36 +163,41 @@ func TestRecord(t *testing.T) {
 	}{
 		{
 			name: "ok with tags",
-			in:   expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 25000), Tags: []string{"работа"}, SpentAt: yesterday},
+			in:   expense.RecordInput{Actor: mom, HubID: family, CategoryID: transport, Amount: rub(t, 25000), Tags: []string{"работа"}, SpentAt: yesterday},
+		},
+		{
+			name:    "not a member",
+			in:      expense.RecordInput{Actor: stranger, HubID: family, CategoryID: transport, Amount: rub(t, 100)},
+			wantErr: hub.ErrNotMember,
 		},
 		{
 			name:    "zero amount",
-			in:      expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 0)},
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, 0)},
 			wantErr: expense.ErrInvalidAmount,
 		},
 		{
 			name:    "negative amount",
-			in:      expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, -100)},
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, -100)},
 			wantErr: expense.ErrInvalidAmount,
 		},
 		{
-			name:    "someone else's category",
-			in:      expense.RecordInput{UserID: bob, CategoryID: transport, Amount: rub(t, 100)},
+			name:    "category from another hub",
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: hobby, Amount: rub(t, 100)},
 			wantErr: category.ErrNotFound,
 		},
 		{
 			name:    "tag equals category name",
-			in:      expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 100), Tags: []string{"#транспорт"}},
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, 100), Tags: []string{"#транспорт"}},
 			wantErr: expense.ErrTagIsCategory,
 		},
 		{
 			name:    "invalid tag",
-			in:      expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 100), Tags: []string{"два слова"}},
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, 100), Tags: []string{"два слова"}},
 			wantErr: expense.ErrInvalidTag,
 		},
 		{
 			name:    "future date",
-			in:      expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 100), SpentAt: time.Now().Add(48 * time.Hour)},
+			in:      expense.RecordInput{Actor: dad, HubID: family, CategoryID: transport, Amount: rub(t, 100), SpentAt: time.Now().Add(48 * time.Hour)},
 			wantErr: expense.ErrFutureSpending,
 		},
 	}
@@ -177,8 +214,8 @@ func TestRecord(t *testing.T) {
 				}
 				return
 			}
-			if e.ID == 0 {
-				t.Error("ID was not assigned")
+			if e.ID == 0 || e.AuthorID != tt.in.Actor {
+				t.Errorf("got ID %d, author %d; want assigned ID and author %d", e.ID, e.AuthorID, tt.in.Actor)
 			}
 		})
 	}
@@ -189,7 +226,7 @@ func TestRecordDefaults(t *testing.T) {
 	svc, _ := newService()
 	before := time.Now()
 
-	e, err := svc.Record(ctx, expense.RecordInput{UserID: alice, Amount: rub(t, 100)})
+	e, err := svc.Record(ctx, expense.RecordInput{Actor: dad, HubID: family, Amount: rub(t, 100)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,45 +238,88 @@ func TestRecordDefaults(t *testing.T) {
 	}
 }
 
-func TestListFiltersByTags(t *testing.T) {
+func TestList(t *testing.T) {
 	ctx := context.Background()
 	svc, _ := newService()
-	record := func(tags ...string) {
+	record := func(actor user.ID, tags ...string) {
 		t.Helper()
-		_, err := svc.Record(ctx, expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 100), Tags: tags})
-		if err != nil {
+		in := expense.RecordInput{Actor: actor, HubID: family, CategoryID: transport, Amount: rub(t, 100), Tags: tags}
+		if _, err := svc.Record(ctx, in); err != nil {
 			t.Fatal(err)
 		}
 	}
-	record("работа")
-	record("работа", "такси")
-	record("отпуск-2026")
-	record()
+	record(dad, "работа")
+	record(dad, "работа", "такси")
+	record(mom, "работа")
+	record(mom)
 
-	got, err := svc.List(ctx, alice, expense.Filter{Tags: []expense.Tag{"работа"}})
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name   string
+		filter expense.Filter
+		want   int
+	}{
+		{name: "all", filter: expense.Filter{}, want: 4},
+		{name: "by tag", filter: expense.Filter{Tags: []expense.Tag{"работа"}}, want: 3},
+		{name: "by two tags", filter: expense.Filter{Tags: []expense.Tag{"работа", "такси"}}, want: 1},
+		{name: "by author", filter: expense.Filter{AuthorID: mom}, want: 2},
+		{name: "author and tag", filter: expense.Filter{AuthorID: mom, Tags: []expense.Tag{"работа"}}, want: 1},
 	}
-	if len(got) != 2 {
-		t.Errorf("got %d expenses tagged работа, want 2", len(got))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.List(ctx, dad, family, tt.filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tt.want {
+				t.Errorf("got %d expenses, want %d", len(got), tt.want)
+			}
+		})
+	}
+
+	if _, err := svc.List(ctx, stranger, family, expense.Filter{}); !errors.Is(err, hub.ErrNotMember) {
+		t.Errorf("stranger: error = %v, want ErrNotMember", err)
 	}
 }
 
-func TestDeleteOthersExpense(t *testing.T) {
+func TestDelete(t *testing.T) {
 	ctx := context.Background()
-	svc, _ := newService()
-	e, err := svc.Record(ctx, expense.RecordInput{UserID: alice, CategoryID: transport, Amount: rub(t, 100)})
-	if err != nil {
-		t.Fatal(err)
+
+	tests := []struct {
+		name    string
+		author  user.ID
+		actor   user.ID
+		wantErr error
+	}{
+		{name: "author deletes own", author: mom, actor: mom},
+		{name: "owner deletes member's", author: mom, actor: dad},
+		{name: "member cannot delete owner's", author: dad, actor: mom, wantErr: expense.ErrForbidden},
+		{name: "stranger", author: dad, actor: stranger, wantErr: hub.ErrNotMember},
 	}
-	if err := svc.Delete(ctx, bob, e.ID); !errors.Is(err, expense.ErrNotFound) {
-		t.Errorf("error = %v, want ErrNotFound", err)
-	}
-	if err := svc.Delete(ctx, alice, e.ID); err != nil {
-		t.Errorf("owner delete: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, repo := newService()
+			e, err := svc.Record(ctx, expense.RecordInput{Actor: tt.author, HubID: family, CategoryID: transport, Amount: rub(t, 100)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = svc.Delete(ctx, tt.actor, family, e.ID)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			wantLeft := 0
+			if tt.wantErr != nil {
+				wantLeft = 1
+			}
+			if len(repo.items) != wantLeft {
+				t.Errorf("%d expenses left, want %d", len(repo.items), wantLeft)
+			}
+		})
 	}
 }
 
-// Проверка на этапе компиляции: настоящий category.Service подходит
-// под интерфейс, который объявил пакет expense.
-var _ expense.Categories = (*category.Service)(nil)
+// Проверки на этапе компиляции: настоящие сервисы подходят под
+// интерфейсы, которые объявил пакет expense.
+var (
+	_ expense.Categories = (*category.Service)(nil)
+	_ expense.Members    = (*hub.Service)(nil)
+)

@@ -1,4 +1,4 @@
-// Package expense — траты: запись, просмотр, удаление.
+// Package expense — траты хаба: запись, просмотр, удаление.
 package expense
 
 import (
@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OWNER/finhub/internal/category"
+	"github.com/OWNER/finhub/internal/hub"
 	"github.com/OWNER/finhub/internal/money"
 	"github.com/OWNER/finhub/internal/user"
 )
@@ -20,7 +21,8 @@ const maxNoteLen = 500
 // занимается Repository. Сравните с Eloquent-моделью, которая сама ходит в БД.
 type Expense struct {
 	ID         ID
-	UserID     user.ID
+	HubID      hub.ID
+	AuthorID   user.ID // кто внёс трату
 	CategoryID category.ID
 	Amount     money.Money
 	Note       string
@@ -31,7 +33,7 @@ type Expense struct {
 
 // New проверяет инварианты траты. Проверки, которым нужны данные из
 // хранилища (существует ли категория), делает Service.
-func New(userID user.ID, categoryID category.ID, amount money.Money, note string, tags []Tag, spentAt, now time.Time) (*Expense, error) {
+func New(hubID hub.ID, authorID user.ID, categoryID category.ID, amount money.Money, note string, tags []Tag, spentAt, now time.Time) (*Expense, error) {
 	if !amount.IsPositive() {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidAmount, amount)
 	}
@@ -49,7 +51,8 @@ func New(userID user.ID, categoryID category.ID, amount money.Money, note string
 		return nil, fmt.Errorf("%w: %s", ErrFutureSpending, spentAt.Format(time.DateOnly))
 	}
 	return &Expense{
-		UserID:     userID,
+		HubID:      hubID,
+		AuthorID:   authorID,
 		CategoryID: categoryID,
 		Amount:     amount,
 		Note:       note,
