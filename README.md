@@ -18,7 +18,7 @@ internal/
 Пакеты ядра не знают о базе данных и клиентах: хранилище описано
 интерфейсами `Repository` в пакетах-потребителях.
 
-Решения и планы — в [docs/decisions.md](docs/decisions.md) и [docs/roadmap.md](docs/roadmap.md).
+Решения и планы — в [docs/decisions.md](docs/decisions.md) и [docs/roadmap.md](docs/roadmap.md), маршрут по коду — [docs/code-tour.md](docs/code-tour.md).
 
 ## Тесты
 
