@@ -53,7 +53,13 @@ func Parse(s string, cur Currency) (Money, error) {
 		return Money{}, fmt.Errorf("%w: %q", ErrInvalidAmount, s)
 	}
 	neg := strings.HasPrefix(whole, "-")
-	units, err := strconv.ParseInt(strings.TrimPrefix(whole, "-"), 10, 64)
+	digits := strings.TrimPrefix(whole, "-")
+	// ParseInt сам принимает знак, поэтому "--5" без этой проверки
+	// превратилось бы в +5.
+	if strings.HasPrefix(digits, "-") || strings.HasPrefix(digits, "+") {
+		return Money{}, fmt.Errorf("%w: %q", ErrInvalidAmount, s)
+	}
+	units, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil {
 		return Money{}, fmt.Errorf("%w: %q", ErrInvalidAmount, s)
 	}

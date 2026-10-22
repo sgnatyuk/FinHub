@@ -27,6 +27,8 @@ func TestParse(t *testing.T) {
 		{in: ".5", wantErr: money.ErrInvalidAmount},
 		{in: "1.-5", wantErr: money.ErrInvalidAmount},
 		{in: "+1", wantErr: money.ErrInvalidAmount},
+		{in: "--5", wantErr: money.ErrInvalidAmount},
+		{in: "-+5", wantErr: money.ErrInvalidAmount},
 		{in: "92233720368547758.08", wantErr: money.ErrOverflow},
 	}
 	for _, tt := range tests {
